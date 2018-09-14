@@ -1,0 +1,11 @@
+[package]
+name = "parse-logs"
+version = "0.1.0"
+authors = ["Glenn Griffin <ggriffiniii@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+combine = "3.5.1"
+chrono = "0.4.5"
+structopt = "0.2"
+rusqlite = { version = "0.14.0", features = ["chrono"] }
