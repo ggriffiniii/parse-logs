@@ -95,7 +95,7 @@ pub mod dhcp {
     use chrono::NaiveDateTime;
     use combine::parser::char::digit;
     use combine::{
-        many1, satisfy, token, Parser, Stream, r#try, choice, count_min_max,
+        many1, satisfy, token, Parser, Stream, try, choice, count_min_max,
         error::ParseError,
         parser::char::{space, string}};
 
@@ -116,7 +116,7 @@ pub mod dhcp {
     }
 
     impl LogEntry {
-        pub fn new(s: &str) -> Result<Self, Box<std::error::Error>> {
+        pub fn new(s: &str) -> Result<Self, Box<::std::error::Error>> {
             log_entry().easy_parse(s).map(|x| x.0).map_err(|e| format!("{}", e).into())
         }
     }
@@ -128,7 +128,7 @@ pub mod dhcp {
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     {
         (
-            crate::datetime(),
+            super::datetime(),
             many1::<String, _>(satisfy(|c| c != ':')),
             token(':'),
             space(),
@@ -145,12 +145,12 @@ pub mod dhcp {
         (
             string("DHCP"),
             choice((
-                r#try(string("INFORM").map(|_| DhcpMsg::Inform)),
-                r#try(string("OFFER").map(|_| DhcpMsg::Offer)),
-                r#try(string("ACK").with(dhcp_ack())),
-                r#try(string("NAK").map(|_| DhcpMsg::Nak)),
-                r#try(string("REQUEST").map(|_| DhcpMsg::Request)),
-                r#try(string("DISCOVER").map(|_| DhcpMsg::Discover)),
+                try(string("INFORM").map(|_| DhcpMsg::Inform)),
+                try(string("OFFER").map(|_| DhcpMsg::Offer)),
+                try(string("ACK").with(dhcp_ack())),
+                try(string("NAK").map(|_| DhcpMsg::Nak)),
+                try(string("REQUEST").map(|_| DhcpMsg::Request)),
+                try(string("DISCOVER").map(|_| DhcpMsg::Discover)),
             ))
         ).map(|(_, msg)| msg)
     }
@@ -286,7 +286,7 @@ pub mod http {
     }
 
     impl LogEntry {
-        pub fn new(s: &str) -> Result<Self, Box<std::error::Error>> {
+        pub fn new(s: &str) -> Result<Self, Box<::std::error::Error>> {
             log_entry()
                 .easy_parse(s)
                 .map(|x| x.0)
@@ -301,7 +301,7 @@ pub mod http {
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     {
         (
-            crate::datetime(),
+            super::datetime(),
             many1::<String, _>(satisfy(|c| c != ':')),
             token(':'),
             space(),

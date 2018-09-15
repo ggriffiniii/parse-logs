@@ -2,7 +2,6 @@
 name = "parse-logs"
 version = "0.1.0"
 authors = ["Glenn Griffin <ggriffiniii@gmail.com>"]
-edition = "2018"
 
 [dependencies]
 combine = "3.5.1"

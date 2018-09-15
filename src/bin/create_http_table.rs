@@ -1,4 +1,5 @@
 extern crate parse_logs;
+#[macro_use]
 extern crate structopt;
 extern crate rusqlite;
 
@@ -60,10 +61,10 @@ impl<'a> Tx<'a> {
         for col in cols_to_add {
             self.add_col(&col)?;
         }
+        let log_datetime = log_entry.datetime;
         let (mut entry_cols, entry_values): (Vec<String>, Vec<String>) = log_entry.attrs.iter().map(|(k,v)| (Self::sanitize_col_name(k).into(), v.clone())).unzip();
         let entry_values: Vec<rusqlite::types::Value> = entry_values.into_iter().map(|v| rusqlite::types::Value::Text(v)).collect();
         let mut entry_values_traits: Vec<&ToSql> = entry_values.iter().map(|v| v as &ToSql).collect();
-        let log_datetime = log_entry.datetime;
         entry_cols.push("datetime".to_string());
         entry_values_traits.push(&log_datetime);
         let insert_stmt = format!("INSERT INTO logs ({}) VALUES ({})",

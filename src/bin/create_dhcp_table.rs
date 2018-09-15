@@ -1,4 +1,5 @@
 extern crate parse_logs;
+#[macro_use]
 extern crate structopt;
 extern crate rusqlite;
 
