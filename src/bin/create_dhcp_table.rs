@@ -55,7 +55,7 @@ fn run() -> Result<(), Box<Error>> {
     for filename in opt.files {
         let mut file_entries = 0;
         let filereader = BufReader::new(File::open(&filename)?);
-        for line in filereader.lines() {
+        for line in filereader.split(b'\n') {
             let line = line?;
             match LogEntry::new(&line) {
                 Ok(log_entry) => {
@@ -63,7 +63,7 @@ fn run() -> Result<(), Box<Error>> {
                     file_entries += 1;
                     tx.insert_log_entry(&log_entry)?;
                 },
-                Err(_) => eprintln!("Failed to parse line: {}", line),
+                Err(_) => eprintln!("Failed to parse line: {}", String::from_utf8_lossy(&line)),
             }
         }
         println!("Added {} entries from file: {}", file_entries, filename.to_string_lossy());

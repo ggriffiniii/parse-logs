@@ -13,6 +13,7 @@ use parse_logs::http::LogEntry;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use rusqlite::types::ToSql;
+use std::io::Write;
 
 #[derive(StructOpt, Debug)]
 struct Opt {
@@ -62,8 +63,8 @@ impl<'a> Tx<'a> {
             self.add_col(&col)?;
         }
         let log_datetime = log_entry.datetime;
-        let (mut entry_cols, entry_values): (Vec<String>, Vec<String>) = log_entry.attrs.iter().map(|(k,v)| (Self::sanitize_col_name(k).into(), v.clone())).unzip();
-        let entry_values: Vec<rusqlite::types::Value> = entry_values.into_iter().map(|v| rusqlite::types::Value::Text(v)).collect();
+        let (mut entry_cols, entry_values): (Vec<String>, Vec<Vec<u8>>) = log_entry.attrs.iter().map(|(k,v)| (Self::sanitize_col_name(k).into(), v.clone())).unzip();
+        let entry_values: Vec<rusqlite::types::Value> = entry_values.into_iter().map(|v| rusqlite::types::Value::Blob(v)).collect();
         let mut entry_values_traits: Vec<&ToSql> = entry_values.iter().map(|v| v as &ToSql).collect();
         entry_cols.push("datetime".to_string());
         entry_values_traits.push(&log_datetime);
@@ -85,15 +86,22 @@ fn run() -> Result<(), Box<Error>> {
     println!("{:?}", opt);
     let mut db = rusqlite::Connection::open("output.db")?;
     let mut tx = Tx::new(&mut db)?;
+    let mut failures = File::create("failures.log")?;
     let mut total_entries = 0;
     for filename in opt.files {
         let mut file_entries = 0;
         let filereader = BufReader::new(File::open(&filename)?);
-        for line in filereader.lines() {
-            let log_entry = LogEntry::new(&line?)?;
-            tx.insert_log_entry(&log_entry)?;
-            total_entries += 1;
-            file_entries += 1;
+        for line in filereader.split(b'\n') {
+            let line = line?;
+            if let Ok(log_entry) = LogEntry::new(&line) {
+                tx.insert_log_entry(&log_entry)?;
+                total_entries += 1;
+                file_entries += 1;
+            } else {
+                failures.write_all(&line)?;
+                failures.write_all(&b"\n"[..])?;
+                println!("failed processing line: {}", String::from_utf8_lossy(&line));
+            }
         }
         println!("Added {} entries from file: {}", file_entries, filename.to_string_lossy());
     }
