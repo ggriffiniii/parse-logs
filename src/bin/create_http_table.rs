@@ -2,23 +2,30 @@ extern crate parse_logs;
 #[macro_use]
 extern crate structopt;
 extern crate rusqlite;
+extern crate chrono;
 
 use structopt::StructOpt;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::io::BufReader;
 use std::fs::File;
 use std::io::BufRead;
-use parse_logs::http::LogEntry;
+use parse_logs::{http, dhcp};
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use rusqlite::types::ToSql;
 use std::io::Write;
+use std::collections::HashMap;
+use std::fs;
+use chrono::NaiveDateTime;
 
 #[derive(StructOpt, Debug)]
 struct Opt {
-    #[structopt(name = "FILE", parse(from_os_str))]
-    files: Vec<PathBuf>,
+    #[structopt(long = "dhcp_dir", parse(from_os_str))]
+    dhcp_dir: PathBuf,
+
+    #[structopt(long = "http_dir", parse(from_os_str))]
+    http_dir: PathBuf,
 }
 
 struct Tx<'a>{
@@ -35,8 +42,9 @@ impl<'a> Tx<'a> {
     }
 
     fn create_table(&mut self) -> Result<(), Box<Error>> {
-        self.tx.execute("CREATE TABLE http_logs (datetime TEXT);", &[])?;
+        self.tx.execute("CREATE TABLE http_logs (datetime TEXT, mac_addr TEXT);", &[])?;
         self.cols.push("datetime".to_string());
+        self.cols.push("mac_addr".to_string());
         Ok(())
     }
 
@@ -56,7 +64,7 @@ impl<'a> Tx<'a> {
         Ok(())
     }
 
-    fn insert_log_entry(&mut self, log_entry: &LogEntry) -> Result<(), Box<Error>> {
+    fn insert_log_entry(&mut self, mac_addr: Option<&str>, log_entry: &http::LogEntry) -> Result<(), Box<Error>> {
         let cols_required: BTreeSet<String> = log_entry.attrs.keys().cloned().collect();
         let cols_to_add: Vec<String> = cols_required.difference(&self.cols_set).cloned().collect();
         for col in cols_to_add {
@@ -67,7 +75,9 @@ impl<'a> Tx<'a> {
         let entry_values: Vec<rusqlite::types::Value> = entry_values.into_iter().map(|v| rusqlite::types::Value::Blob(v)).collect();
         let mut entry_values_traits: Vec<&ToSql> = entry_values.iter().map(|v| v as &ToSql).collect();
         entry_cols.push("datetime".to_string());
+        entry_cols.push("mac_addr".to_string());
         entry_values_traits.push(&log_datetime);
+        entry_values_traits.push(&mac_addr);
         let insert_stmt = format!("INSERT INTO http_logs ({}) VALUES ({})",
                 entry_cols.join(","),
                 entry_cols.iter().map(|_| "?".to_string()).collect::<Vec<_>>().join(","));
@@ -81,20 +91,85 @@ impl<'a> Tx<'a> {
     }
 }
 
+#[derive(Debug)]
+struct IpToMacBuilder(HashMap<String, Vec<(NaiveDateTime, String)>>);
+#[derive(Debug)]
+struct IpToMacLookup(HashMap<String, Vec<(NaiveDateTime, String)>>);
+
+impl IpToMacBuilder {
+    fn new() -> Self {
+        IpToMacBuilder(HashMap::new())
+    }
+
+    fn add_dhcp_ack(&mut self, date: NaiveDateTime, ip_addr: &str, mac_addr: &str) {
+        self.0.entry(ip_addr.to_string()).or_default().push((date, mac_addr.to_string()));
+    }
+
+    fn finalize(self) -> IpToMacLookup {
+        // Sort the (date, mac_addr) entries within each ip address, and then
+        // remove any consecutive entries that have the same mac address.
+        let finalized = self.0.into_iter().map(|(k, mut v)| {
+            v.sort_unstable();
+            let remove_dups = v.iter().take(1).cloned().chain(v.windows(2).filter_map(|window| {
+                if let &[(_, ref mac1), (ref date2, ref mac2)] = window {
+                    if mac1 == mac2 {
+                        None
+                    } else {
+                        Some((date2.clone(), mac2.clone()))
+                    }
+                } else {
+                    unreachable!();
+                }
+            }));
+            (k, remove_dups.collect())
+        }).collect();
+        IpToMacLookup(finalized)
+    }
+}
+
+impl IpToMacLookup {
+    fn get_mac(&self, date: NaiveDateTime, ip_addr: &str) -> Option<&str> {
+        let v: &[(NaiveDateTime, String)] = self.0.get(ip_addr)?;
+        v.iter().take_while(|&&(ack_date, _) : &&(NaiveDateTime, String)| -> bool {ack_date < date}).map(|(_, mac)| mac.as_str()).last()
+    }
+}
+
+fn read_dhcp_logs<P: AsRef<Path>>(dir: P) -> Result<IpToMacLookup, Box<Error>> {
+    let mut ip_to_mac = IpToMacBuilder::new();
+    for dir_entry in fs::read_dir(dir)? {
+        let filename = dir_entry?.path();
+        let filereader = BufReader::new(File::open(&filename)?);
+        for line in filereader.split(b'\n') {
+            let line = line?;
+            match dhcp::LogEntry::new(&line) {
+                Ok(dhcp::LogEntry{ datetime, msg: dhcp::DhcpMsg::Ack{ip_addr, mac_addr} }) => {
+                    ip_to_mac.add_dhcp_ack(datetime, &ip_addr, &mac_addr);
+                },
+                Ok(_) => {},
+                Err(_) => eprintln!("Failed to parse line: {}", String::from_utf8_lossy(&line)),
+            }
+        }
+    }
+    Ok(ip_to_mac.finalize())
+}
+
 fn run() -> Result<(), Box<Error>> {
     let opt = Opt::from_args();
     println!("{:?}", opt);
+    let ip_to_mac = read_dhcp_logs(opt.dhcp_dir)?;
+    println!("{:?}", ip_to_mac);
     let mut db = rusqlite::Connection::open("output.db")?;
     let mut tx = Tx::new(&mut db)?;
     let mut failures = File::create("failures.log")?;
     let mut total_entries = 0;
-    for filename in opt.files {
+    for dir_entry in fs::read_dir(opt.http_dir)? {
+        let filename = dir_entry?.path();
         let mut file_entries = 0;
         let filereader = BufReader::new(File::open(&filename)?);
         for line in filereader.split(b'\n') {
             let line = line?;
-            if let Ok(log_entry) = LogEntry::new(&line) {
-                tx.insert_log_entry(&log_entry)?;
+            if let Ok(log_entry) = http::LogEntry::new(&line) {
+                tx.insert_log_entry(log_entry.attrs.get("srcip").and_then(|b| std::str::from_utf8(b).ok()).and_then(|ip| ip_to_mac.get_mac(log_entry.datetime, ip)), &log_entry)?;
                 total_entries += 1;
                 file_entries += 1;
             } else {
