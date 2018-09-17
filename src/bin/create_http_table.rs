@@ -35,7 +35,7 @@ impl<'a> Tx<'a> {
     }
 
     fn create_table(&mut self) -> Result<(), Box<Error>> {
-        self.tx.execute("CREATE TABLE logs (datetime TEXT);", &[])?;
+        self.tx.execute("CREATE TABLE http_logs (datetime TEXT);", &[])?;
         self.cols.push("datetime".to_string());
         Ok(())
     }
@@ -50,7 +50,7 @@ impl<'a> Tx<'a> {
 
     fn add_col(&mut self, col: &str) -> Result<(), Box<Error>> {
         let sanitized_col = Self::sanitize_col_name(col);
-        self.tx.execute(&format!("ALTER TABLE logs ADD {} TEXT", sanitized_col), &[])?;
+        self.tx.execute(&format!("ALTER TABLE http_logs ADD {} TEXT", sanitized_col), &[])?;
         self.cols.push(col.to_string());
         self.cols_set.insert(col.to_string());
         Ok(())
@@ -68,7 +68,7 @@ impl<'a> Tx<'a> {
         let mut entry_values_traits: Vec<&ToSql> = entry_values.iter().map(|v| v as &ToSql).collect();
         entry_cols.push("datetime".to_string());
         entry_values_traits.push(&log_datetime);
-        let insert_stmt = format!("INSERT INTO logs ({}) VALUES ({})",
+        let insert_stmt = format!("INSERT INTO http_logs ({}) VALUES ({})",
                 entry_cols.join(","),
                 entry_cols.iter().map(|_| "?".to_string()).collect::<Vec<_>>().join(","));
         self.tx.execute(&insert_stmt, entry_values_traits.as_slice())?;
