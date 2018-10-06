@@ -42,9 +42,10 @@ impl<'a> Tx<'a> {
     }
 
     fn create_table(&mut self) -> Result<(), Box<Error>> {
-        self.tx.execute("CREATE TABLE http_logs (datetime TEXT, mac_addr TEXT);", &[])?;
+        self.tx.execute("CREATE TABLE http_logs (datetime TEXT, mac_addr TEXT, friendly_name TEXT);", &[])?;
         self.cols.push("datetime".to_string());
         self.cols.push("mac_addr".to_string());
+        self.cols.push("friendly_name".to_string());
         Ok(())
     }
 
@@ -64,7 +65,7 @@ impl<'a> Tx<'a> {
         Ok(())
     }
 
-    fn insert_log_entry(&mut self, mac_addr: Option<&str>, log_entry: &http::LogEntry) -> Result<(), Box<Error>> {
+    fn insert_log_entry(&mut self, mac_addr: Option<&str>, friendly_name: Option<&str>, log_entry: &http::LogEntry) -> Result<(), Box<Error>> {
         let cols_required: BTreeSet<String> = log_entry.attrs.keys().cloned().collect();
         let cols_to_add: Vec<String> = cols_required.difference(&self.cols_set).cloned().collect();
         for col in cols_to_add {
@@ -76,8 +77,10 @@ impl<'a> Tx<'a> {
         let mut entry_values_traits: Vec<&ToSql> = entry_values.iter().map(|v| v as &ToSql).collect();
         entry_cols.push("datetime".to_string());
         entry_cols.push("mac_addr".to_string());
+        entry_cols.push("friendly_name".to_string());
         entry_values_traits.push(&log_datetime);
         entry_values_traits.push(&mac_addr);
+        entry_values_traits.push(&friendly_name);
         let insert_stmt = format!("INSERT INTO http_logs ({}) VALUES ({})",
                 entry_cols.join(","),
                 entry_cols.iter().map(|_| "?".to_string()).collect::<Vec<_>>().join(","));
@@ -134,15 +137,30 @@ impl IpToMacLookup {
     }
 }
 
-fn read_dhcp_logs<P: AsRef<Path>>(dir: P) -> Result<IpToMacLookup, Box<Error>> {
+fn read_dhcp_logs<P: AsRef<Path>>(dir: P) -> Result<(IpToMacLookup, HashMap<String, String>), Box<Error>> {
     let mut ip_to_mac = IpToMacBuilder::new();
+    let mut mac_to_friendly_name = HashMap::new();
     for dir_entry in fs::read_dir(dir)? {
         let filename = dir_entry?.path();
         let filereader = BufReader::new(File::open(&filename)?);
         for line in filereader.split(b'\n') {
             let line = line?;
             match dhcp::LogEntry::new(&line) {
-                Ok(dhcp::LogEntry{ datetime, msg: dhcp::DhcpMsg::Ack{ip_addr, mac_addr} }) => {
+                Ok(dhcp::LogEntry{ datetime, msg: dhcp::DhcpMsg::Ack{ip_addr, mac_addr, friendly_name} }) => {
+                    if let Some(friendly_name) = friendly_name {
+                        println!("friendly_name: {}", friendly_name);
+                        use std::collections::hash_map::Entry::*;
+                        match mac_to_friendly_name.entry(mac_addr.clone()) {
+                            Occupied(occupied) => {
+                                if *occupied.get() != friendly_name {
+                                    eprintln!("mac {} has multiple friendly names: ({}, {})", &mac_addr, occupied.get(), friendly_name);
+                                }
+                            },
+                            Vacant(vacant) => {
+                                vacant.insert(friendly_name);
+                            },
+                        }
+                    }
                     ip_to_mac.add_dhcp_ack(datetime, &ip_addr, &mac_addr);
                 },
                 Ok(_) => {},
@@ -150,13 +168,13 @@ fn read_dhcp_logs<P: AsRef<Path>>(dir: P) -> Result<IpToMacLookup, Box<Error>> {
             }
         }
     }
-    Ok(ip_to_mac.finalize())
+    Ok((ip_to_mac.finalize(), mac_to_friendly_name))
 }
 
 fn run() -> Result<(), Box<Error>> {
     let opt = Opt::from_args();
     println!("{:?}", opt);
-    let ip_to_mac = read_dhcp_logs(opt.dhcp_dir)?;
+    let (ip_to_mac, mac_to_friendly_name) = read_dhcp_logs(opt.dhcp_dir)?;
     println!("{:?}", ip_to_mac);
     let mut db = rusqlite::Connection::open("output.db")?;
     let mut tx = Tx::new(&mut db)?;
@@ -169,7 +187,9 @@ fn run() -> Result<(), Box<Error>> {
         for line in filereader.split(b'\n') {
             let line = line?;
             if let Ok(log_entry) = http::LogEntry::new(&line) {
-                tx.insert_log_entry(log_entry.attrs.get("srcip").and_then(|b| std::str::from_utf8(b).ok()).and_then(|ip| ip_to_mac.get_mac(log_entry.datetime, ip)), &log_entry)?;
+                let mac_addr: Option<&str> = log_entry.attrs.get("srcip").and_then(|b| std::str::from_utf8(b).ok()).and_then(|ip| ip_to_mac.get_mac(log_entry.datetime, ip));
+                let friendly_name: Option<&str> = mac_addr.and_then(|mac_addr| mac_to_friendly_name.get(mac_addr).map(String::as_ref));
+                tx.insert_log_entry(mac_addr, friendly_name, &log_entry)?;
                 total_entries += 1;
                 file_entries += 1;
             } else {

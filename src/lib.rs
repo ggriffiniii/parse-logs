@@ -94,7 +94,7 @@ mod tests {
 pub mod dhcp {
     use chrono::NaiveDateTime;
     use combine::{
-        many1, satisfy, token, Parser, Stream, try, choice, count_min_max,
+        optional, many1, satisfy, token, Parser, Stream, try, choice, count_min_max,
         error::{ParseError, StreamError},
         stream::StreamErrorFor,
         parser::byte::{digit, space, bytes}};
@@ -109,7 +109,7 @@ pub mod dhcp {
     pub enum DhcpMsg {
         Inform,
         Offer,
-        Ack{ ip_addr: String, mac_addr: String },
+        Ack{ ip_addr: String, mac_addr: String, friendly_name: Option<String> },
         Nak,
         Request,
         Discover,
@@ -168,8 +168,15 @@ pub mod dhcp {
             space(),
             bytes(&b"to "[..]).or(bytes(&b"("[..])),
             mac_addr(),
-        ).map(|(_, _, ip_addr, _, _, mac_addr)| {
-            DhcpMsg::Ack{ip_addr, mac_addr}
+            bytes(&b") "[..]).or(bytes(&b" "[..])),
+            optional((
+                try(bytes(&b"("[..])),
+                many1::<Vec<u8>, _>(satisfy(|c| c != b')')),
+                bytes(&b")"[..]))),
+        ).map(|(_, _, ip_addr, _, _, mac_addr, _, opt_name)| {
+            let opt_name: Option<(_, Vec<u8>, _)> = opt_name;
+            let friendly_name = opt_name.and_then(|(_, friendly_name, _)| String::from_utf8(friendly_name).ok());
+            DhcpMsg::Ack{ip_addr, mac_addr, friendly_name}
         })
     }
 
@@ -222,12 +229,12 @@ pub mod dhcp {
         #[test]
         fn dhcp_ack() {
             assert_eq!(
-                super::dhcp_ack().parse(&b" on 192.168.0.254 to a4:db:30:66:4f:90"[..]),
-                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.254".to_string(), mac_addr: "a4:db:30:66:4f:90".to_string()}, &b""[..]))
+                super::dhcp_ack().parse(&b" on 192.168.0.254 to a4:db:30:66:4f:90 "[..]),
+                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.254".to_string(), mac_addr: "a4:db:30:66:4f:90".to_string(), friendly_name: None}, &b""[..]))
             );
             assert_eq!(
-                super::dhcp_ack().parse(&b" to 192.168.0.77 (9c:ad:97:d1:65:39"[..]),
-                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.77".to_string(), mac_addr: "9c:ad:97:d1:65:39".to_string()}, &b""[..]))
+                super::dhcp_ack().parse(&b" to 192.168.0.77 (9c:ad:97:d1:65:39) "[..]),
+                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.77".to_string(), mac_addr: "9c:ad:97:d1:65:39".to_string(), friendly_name: None}, &b""[..]))
             );
         }
 
@@ -242,12 +249,16 @@ pub mod dhcp {
                 Ok((DhcpMsg::Offer, &b""[..]))
             );
             assert_eq!(
-                super::dhcp_msg().parse(&b"DHCPACK on 192.168.0.254 to a4:db:30:66:4f:90"[..]),
-                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.254".to_string(), mac_addr: "a4:db:30:66:4f:90".to_string()}, &b""[..]))
+                super::dhcp_msg().parse(&b"DHCPACK on 192.168.0.254 to a4:db:30:66:4f:90 via eth0"[..]),
+                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.254".to_string(), mac_addr: "a4:db:30:66:4f:90".to_string(), friendly_name: None}, &b"via eth0"[..]))
             );
             assert_eq!(
-                super::dhcp_msg().parse(&b"DHCPACK to 192.168.0.77 (9c:ad:97:d1:65:39"[..]),
-                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.77".to_string(), mac_addr: "9c:ad:97:d1:65:39".to_string()}, &b""[..]))
+                super::dhcp_msg().parse(&b"DHCPACK on 192.168.0.254 to a4:db:30:66:4f:90 (MyName) via eth0"[..]),
+                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.254".to_string(), mac_addr: "a4:db:30:66:4f:90".to_string(), friendly_name: Some("MyName".to_string())}, &b" via eth0"[..]))
+            );
+            assert_eq!(
+                super::dhcp_msg().parse(&b"DHCPACK to 192.168.0.77 (9c:ad:97:d1:65:39) via eth0"[..]),
+                Ok((DhcpMsg::Ack{ip_addr: "192.168.0.77".to_string(), mac_addr: "9c:ad:97:d1:65:39".to_string(), friendly_name: None}, &b"via eth0"[..]))
             );
             assert_eq!(
                 super::dhcp_msg().parse(&b"DHCPNAK"[..]),
@@ -265,13 +276,13 @@ pub mod dhcp {
 
         #[test]
         fn log_entry() {
-            let log = &br#"2015:06:03-00:01:00 PublicWiFi dhcpd: DHCPACK to 192.168.0.77 (9c:ad:97:d1:65:39"#[..];
+            let log = &br#"2015:06:03-00:01:00 PublicWiFi dhcpd: DHCPACK to 192.168.0.77 (9c:ad:97:d1:65:39) "#[..];
             let want = LogEntry {
                 datetime: NaiveDateTime::new(
                     NaiveDate::from_ymd(2015, 6, 3),
                     NaiveTime::from_hms(0, 1, 0),
                 ),
-                msg: DhcpMsg::Ack{ip_addr: "192.168.0.77".to_string(), mac_addr: "9c:ad:97:d1:65:39".to_string()}
+                msg: DhcpMsg::Ack{ip_addr: "192.168.0.77".to_string(), mac_addr: "9c:ad:97:d1:65:39".to_string(), friendly_name: None}
             };
             assert_eq!(super::log_entry().parse(log), Ok((want, &b""[..])));
 

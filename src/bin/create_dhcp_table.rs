@@ -34,7 +34,7 @@ impl<'a> Tx<'a> {
     }
 
     fn insert_log_entry(&mut self, log_entry: &LogEntry) -> Result<(), Box<Error>> {
-        if let LogEntry{ datetime, msg: DhcpMsg::Ack{ip_addr, mac_addr} } = log_entry {
+        if let LogEntry{ datetime, msg: DhcpMsg::Ack{ip_addr, mac_addr, friendly_name} } = log_entry {
             self.tx.execute("INSERT INTO dhcp_logs (datetime, ip_addr, mac_addr) VALUES (?, ?, ?)", &[datetime, &ip_addr.as_str(), &mac_addr.as_str()])?;
         }
         return Ok(())
