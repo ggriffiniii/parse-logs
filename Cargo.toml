@@ -8,3 +8,7 @@ combine = "3.5.1"
 chrono = "0.4.5"
 structopt = "0.2"
 rusqlite = { version = "0.14.0", features = ["chrono"] }
+phf = "0.7.23"
+
+[build-dependencies]
+phf_codegen = "0.7.23"

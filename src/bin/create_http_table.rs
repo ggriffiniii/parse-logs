@@ -3,6 +3,9 @@ extern crate parse_logs;
 extern crate structopt;
 extern crate rusqlite;
 extern crate chrono;
+extern crate phf;
+
+include!(concat!(env!("OUT_DIR"), "/friendly_names.rs"));
 
 use structopt::StructOpt;
 use std::error::Error;
@@ -189,9 +192,14 @@ fn run() -> Result<(), Box<Error>> {
             if let Ok(log_entry) = http::LogEntry::new(&line) {
                 let mac_addr: Option<&str> = log_entry.attrs.get("srcip").and_then(|b| std::str::from_utf8(b).ok()).and_then(|ip| ip_to_mac.get_mac(log_entry.datetime, ip));
                 let friendly_name: Option<&str> = mac_addr.and_then(|mac_addr| mac_to_friendly_name.get(mac_addr).map(String::as_ref));
-                tx.insert_log_entry(mac_addr, friendly_name, &log_entry)?;
-                total_entries += 1;
-                file_entries += 1;
+                if let Some(friendly_name) = friendly_name {
+                    let friendly_name = friendly_name.to_lowercase();
+                    if FRIENDLY_NAMES.contains(friendly_name.as_str()) {
+                        tx.insert_log_entry(mac_addr, Some(&friendly_name), &log_entry)?;
+                        total_entries += 1;
+                        file_entries += 1;
+                    }
+                }
             } else {
                 failures.write_all(&line)?;
                 failures.write_all(&b"\n"[..])?;
